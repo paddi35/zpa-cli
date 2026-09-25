@@ -21,7 +21,8 @@ class ConsoleExporter(private val out: PrintStream = System.out) : IssueExporter
                     positionFormatted += ":$startColumn"
                 }
                 val ruleCol = if (ruleKey.length < 24) ruleKey.padEnd(24) else "$ruleKey  "
-                out.println("${positionFormatted.padEnd(10)}${severity.padEnd(10)}$ruleCol${issue.primaryLocation.message()}")
+                val fixHint = if (issue.quickFixes.isNotEmpty()) " [quick fix available]" else ""
+                out.println("${positionFormatted.padEnd(10)}${severity.padEnd(10)}$ruleCol${issue.primaryLocation.message()}$fixHint")
             }
 
             out.println("")

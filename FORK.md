@@ -11,6 +11,8 @@ the upstream `main` branch):
 - Daemon mode (`--daemon`): repeated analyses in one JVM over a line-based JSON protocol on stdin/stdout. The
   temporary directory with the relocated plugin JARs is now deleted at the end of every run, and the jar manifest
   carries `Implementation-Version`.
+- Quick fixes offered by the rules are exported as an optional `quickFixes` field per issue in the `json` and
+  `sq-generic-issue-import` formats; the `console` format marks such issues with `[quick fix available]`.
 - CI: Docker Hub publishing is skipped outside `felipebz/zpa-cli`.
 
 Local builds use the ZPA version given by `-PzpaVersion` (for example a `-local-SNAPSHOT` build of

@@ -46,7 +46,38 @@ Currently, the zpa-cli supports these options:
     - `rule`: rule identifier (e.g. `zpa:ParsingError`, `zpa:PackageBodyParameterNocopy`).
     - `severity`: `"BLOCKER"`, `"CRITICAL"`, `"MAJOR"`, `"MINOR"`, `"INFO"`.
     - `message`: localized diagnostic message.
+    - `quickFixes` (optional, fork): automatic corrections for the diagnostic, see [Quick fixes](#quick-fixes-fork). The field is omitted when the rule offers none.
 * `sq-generic-issue-import`: generates a JSON file using SonarQube's ["Generic Issue Data" format](https://docs.sonarqube.org/latest/analysis/generic-issue/) that can be used in SonarCloud or in a SonarQube server.
+  Issues with a quick fix additionally carry a `quickFixes` field (fork, see [Quick fixes](#quick-fixes-fork)); SonarQube ignores it.
+
+### Quick fixes (fork)
+
+Some rules (e.g. `InequalityUsage`, `ComparisonWithNull`) offer automatic corrections. The `json` and
+`sq-generic-issue-import` formats export them per issue as an optional `quickFixes` array, which is omitted when the
+issue has none, so reports without quick fixes are unchanged. The `console` format appends `[quick fix available]` to
+such issues.
+
+```json
+"quickFixes": [
+  {
+    "message": "Change to \"IS NULL\"",
+    "edits": [
+      { "startLine": 7, "startColumn": 5, "endLine": 7, "endColumn": 12, "text": "" },
+      { "startLine": 7, "startColumn": 13, "endLine": 7, "endColumn": 13, "text": " IS NULL" }
+    ]
+  }
+]
+```
+
+* An issue may offer several alternative quick fixes; each one has a `message` and a non-empty list of `edits`.
+* Each edit replaces a range of the file of the issue with `text`. The coordinates are the same as those of the issue
+  location in the respective format (`primaryLocation.textRange` / `range`): lines are 1-based, columns are 0-based
+  UTF-16 code units, and `endColumn` is exclusive. Unlike the issue location, all four coordinates are always present.
+  An empty `text` deletes the range; an empty range inserts `text`.
+* All edits of a quick fix refer to the original file and must be applied together (e.g. from the last to the first).
+  They do not overlap. Quick fixes of different issues may overlap (for example `x <> NULL` gets one fix from
+  `InequalityUsage` and one from `ComparisonWithNull`), so after applying one, the file should be analyzed again.
+* The `json` `schemaVersion` stays `1`: the field is an additive, optional extension.
 
 ### Exit codes:
 * `0`: analysis completed without an enabled validation failure (threshold not exceeded)

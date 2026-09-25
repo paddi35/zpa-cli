@@ -55,7 +55,21 @@ class GenericIssueFormatExporter(private val outputFile: String) : IssueExporter
                 type = type,
                 primaryLocation = primaryLocation,
                 duration = activeRule.remediationConstant,
-                secondaryLocations = secondaryLocations
+                secondaryLocations = secondaryLocations,
+                quickFixes = issue.quickFixes.takeIf { it.isNotEmpty() }?.map { quickFix ->
+                    QuickFix(
+                        message = quickFix.message(),
+                        edits = quickFix.edits().map { edit ->
+                            TextEdit(
+                                startLine = edit.startLine(),
+                                startColumn = edit.startLineOffset(),
+                                endLine = edit.endLine(),
+                                endColumn = edit.endLineOffset(),
+                                text = edit.text()
+                            )
+                        }
+                    )
+                }
             )
         }
         val genericReport = GenericIssueData(genericIssues)
