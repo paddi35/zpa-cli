@@ -43,6 +43,15 @@ tasks.test {
     useJUnitPlatform()
 }
 
+tasks.jar {
+    manifest {
+        attributes(
+            "Implementation-Title" to "zpa-cli",
+            "Implementation-Version" to project.version,
+        )
+    }
+}
+
 application {
     mainClass.set("br.com.felipezorzo.zpa.cli.MainKt")
 }

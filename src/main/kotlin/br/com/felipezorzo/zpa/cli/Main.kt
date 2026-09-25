@@ -93,44 +93,16 @@ class Main(private val args: Arguments) {
         }
 
         var pluginManager: PluginManager? = null
-
-        if (!args.syntaxOnly) {
-            val codePath = Path.of(Main::class.java.protectionDomain.codeSource.location.toURI())
-            val appHome = if (codePath.extension == "jar" && (codePath.parent.name == "lib" || codePath.parent.name == "jars")) {
-                codePath.parent.parent.absolute()
-            } else {
-                Path.of(".")
-            }
-
-            val tempDir = Files.createTempDirectory("zpa-cli")
-            tempDir.toFile().deleteOnExit()
-
-            val pluginRoot = appHome.resolve("plugins")
-            if (pluginRoot.exists()) {
-                pluginRoot.listDirectoryEntries("*.jar").forEach {
-                    val input = it.toFile()
-                    val output = tempDir.resolve(it.fileName).toFile()
-                    output.deleteOnExit()
-
-                    val rules: MutableList<Relocation> = ArrayList<Relocation>()
-                    rules.add(Relocation("org.sonar.plugins.plsqlopen.api.sslr", "com.felipebz.flr.api"))
-                    rules.add(Relocation("org.sonar.plugins.plsqlopen.api", "com.felipebz.zpa.api"))
-
-                    val relocator = JarRelocator(input, output, rules)
-                    try {
-                        relocator.run()
-                    } catch (e: IOException) {
-                        throw RuntimeException("Unable to relocate", e)
-                    }
-                }
-            }
-
-            pluginManager = PluginManager(tempDir)
-        }
-
+        var pluginTempDir: Path? = null
         var validationFailed = false
 
         try {
+            if (!args.syntaxOnly) {
+                val tempDir = Files.createTempDirectory("zpa-cli")
+                pluginTempDir = tempDir
+                pluginManager = createPluginManager(tempDir)
+            }
+
             if (pluginManager != null) {
                 pluginManager.loadPlugins()
                 pluginManager.startPlugins()
@@ -209,9 +181,6 @@ class Main(private val args: Arguments) {
                     projectAnalysisContext = prepareProjectAnalysisContext(projectSources)
                 }
 
-                val progressReport = ProgressReport("Report about progress of code analyzer", TimeUnit.SECONDS.toMillis(10))
-                progressReport.start(targetFiles.map { it.pathRelativeToBase }.toList())
-
                 val scanner = AstScanner(
                     checkList,
                     metadata,
@@ -219,6 +188,10 @@ class Main(private val args: Arguments) {
                     StandardCharsets.UTF_8,
                     projectAnalysisContext
                 )
+
+                // Started right before the guarded scan, so its thread is always stopped or cancelled.
+                val progressReport = ProgressReport("Report about progress of code analyzer", TimeUnit.SECONDS.toMillis(10))
+                progressReport.start(targetFiles.map { it.pathRelativeToBase }.toList())
 
                 val rawIssues: List<ZpaIssue>
                 var scanSucceeded = false
@@ -269,9 +242,53 @@ class Main(private val args: Arguments) {
                     LOG.warn("Failed to unload plugins: ${e.message}")
                 }
             }
+            if (pluginTempDir != null) {
+                deleteTempDir(pluginTempDir)
+            }
         }
 
         return if (validationFailed) 1 else 0
+    }
+
+    private fun createPluginManager(tempDir: Path): PluginManager {
+        val codePath = Path.of(Main::class.java.protectionDomain.codeSource.location.toURI())
+        val appHome = if (codePath.extension == "jar" && (codePath.parent.name == "lib" || codePath.parent.name == "jars")) {
+            codePath.parent.parent.absolute()
+        } else {
+            Path.of(".")
+        }
+
+        val pluginRoot = appHome.resolve("plugins")
+        if (pluginRoot.exists()) {
+            pluginRoot.listDirectoryEntries("*.jar").forEach {
+                val input = it.toFile()
+                val output = tempDir.resolve(it.fileName).toFile()
+
+                val rules: MutableList<Relocation> = ArrayList<Relocation>()
+                rules.add(Relocation("org.sonar.plugins.plsqlopen.api.sslr", "com.felipebz.flr.api"))
+                rules.add(Relocation("org.sonar.plugins.plsqlopen.api", "com.felipebz.zpa.api"))
+
+                val relocator = JarRelocator(input, output, rules)
+                try {
+                    relocator.run()
+                } catch (e: IOException) {
+                    throw RuntimeException("Unable to relocate", e)
+                }
+            }
+        }
+
+        return PluginManager(tempDir)
+    }
+
+    /**
+     * Deletes the relocated plugin JARs at the end of every run instead of relying on deleteOnExit, so repeated
+     * runs in one JVM (daemon mode) don't accumulate temporary directories and exit-hook entries.
+     */
+    private fun deleteTempDir(dir: Path) {
+        if (!dir.toFile().deleteRecursively()) {
+            LOG.warn("Failed to delete temporary directory: $dir")
+            dir.toFile().walkTopDown().forEach { it.deleteOnExit() }
+        }
     }
 
     private fun prepareProjectAnalysisContext(files: Collection<InputFile>): ProjectAnalysisContext =
@@ -370,6 +387,9 @@ fun execute(args: Array<String>): Int {
 }
 
 fun main(args: Array<String>) {
+    if (args.contains(DAEMON_FLAG)) {
+        kotlin.system.exitProcess(Daemon.runOnStandardStreams(args))
+    }
     val exitCode = execute(args)
     if (exitCode != 0) {
         kotlin.system.exitProcess(exitCode)

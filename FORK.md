@@ -8,6 +8,9 @@ Modifications by Patrick Völkel, since 2026-09-25 (the full list is the git his
 the upstream `main` branch):
 
 - Issues on lines with a NOSONAR comment are suppressed.
+- Daemon mode (`--daemon`): repeated analyses in one JVM over a line-based JSON protocol on stdin/stdout. The
+  temporary directory with the relocated plugin JARs is now deleted at the end of every run, and the jar manifest
+  carries `Implementation-Version`.
 - CI: Docker Hub publishing is skipped outside `felipebz/zpa-cli`.
 
 Local builds use the ZPA version given by `-PzpaVersion` (for example a `-local-SNAPSHOT` build of
