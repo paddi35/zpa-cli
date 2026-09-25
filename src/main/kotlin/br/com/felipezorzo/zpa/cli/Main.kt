@@ -226,7 +226,7 @@ class Main(private val args: Arguments) {
                     rawIssues = targetFiles.parallelStream().flatMap { file ->
                         val scannerResult = scanner.scanFile(file, fileId = FileId(file.pathRelativeToBase))
                         progressReport.nextFile()
-                        scannerResult.issues.stream()
+                        NoSonarFilter.filter(scannerResult.issues, scannerResult.linesWithNoSonar).stream()
                     }.collect(Collectors.toList())
                     scanSucceeded = true
                 } finally {
