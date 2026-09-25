@@ -97,6 +97,27 @@ sonar-scanner
 
 Check the [demo project on SonarCloud](https://sonarcloud.io/project/issues?id=utPLSQL-zpa-demo&resolved=false)!
 
+## Daemon mode (fork)
+
+`zpa-cli --daemon` keeps one JVM running for many analyses (e.g. for an editor integration), avoiding the JVM
+startup on every run. `--daemon` must be the only argument. The protocol is line-based JSON (UTF-8, one object per
+`\n`-terminated line) on stdin/stdout:
+
+* On start the daemon writes `{"type":"ready","protocol":1,"version":"<zpa-cli version>"}`.
+* Each request line is `{"id": <string|number>, "args": ["--sources", "...", ...]}`, where `args` are exactly the
+  arguments of a normal invocation. Optional `"stdin": "<text>"` is the content read by `--files -`; without it,
+  standard input is empty for the analysis.
+* Requests run sequentially. Each gets one response line
+  `{"id": ..., "exitCode": <int>, "stdout": "...", "stderr": "..."}` with the usual [exit codes](#exit-codes) and
+  everything the run wrote to stdout/stderr (including log output). Nothing else is written to stdout.
+* A malformed request line gets a response with `exitCode` 2 and the error in `stderr` (`id` is `null` if it could not
+  be read); the daemon keeps running.
+* `{"type":"shutdown"}` or the end of stdin stops the daemon with exit code 0.
+
+Relative paths (`--sources`, `--output-file`, `--config`, ...) resolve against the directory the daemon was started
+in, not per request, so clients should pass absolute paths. Plugins are loaded per request, so plugins added to the
+`plugins` folder are picked up without restarting the daemon.
+
 ## Contributing
 
 Please read our [contributing guidelines](CONTRIBUTING.md) to see how you can contribute to this project.
