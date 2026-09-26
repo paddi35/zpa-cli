@@ -220,16 +220,25 @@ class SourceSelectionTest {
     }
 
     @Test
-    fun stdinRejectedInNormalAnalysis() {
+    fun stdinIsNotAProjectTarget() {
         val root = Files.createTempDirectory("zpa-source-selection-test").toFile()
         try {
             val selection = SourceSelection(root.toPath(), defaultExtensions)
             val projectSources = selection.discoverProjectSources()
 
+            // Project-aware stdin analysis goes through resolveStdinOverlayPath/applyStdinOverlay instead.
             val ex = assertFailsWith<CliValidationException> {
                 selection.resolveProjectTargets(projectSources, listOf("-"))
             }
-            assertTrue(ex.message!!.contains("Standard input ('--files -') is currently supported only with --syntax-only"))
+            assertTrue(ex.message!!.contains("must be analyzed as a project overlay"))
+            val exMixed = assertFailsWith<CliValidationException> {
+                selection.resolveStdinOverlayPath(listOf("-", "a.sql"), "b.sql")
+            }
+            assertTrue(exMixed.message!!.contains("cannot be combined with other --files entries"))
+            val exMissing = assertFailsWith<CliValidationException> {
+                selection.resolveStdinOverlayPath(listOf("-"), "")
+            }
+            assertTrue(exMissing.message!!.contains("--stdin-filename is required"))
         } finally {
             root.deleteRecursively()
         }

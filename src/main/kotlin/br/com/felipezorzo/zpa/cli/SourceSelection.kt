@@ -45,9 +45,9 @@ internal class SourceSelection(
         val resolvedTargets = LinkedHashMap<String, InputFile>()
 
         for (rawTarget in requestedFiles) {
-            if (rawTarget == "-") {
+            if (rawTarget == STDIN_TARGET) {
                 throw CliValidationException(
-                    "Standard input ('--files -') is currently supported only with --syntax-only. Project-aware semantic analysis requires project-overlay support which is deferred."
+                    "Standard input ('--files -') must be analyzed as a project overlay (resolveStdinOverlayPath), not as a disk target"
                 )
             }
 
@@ -80,6 +80,44 @@ internal class SourceSelection(
         return resolvedTargets.values.sortedBy { it.pathRelativeToBase }
     }
 
+    /**
+     * Validates a project-aware stdin request (`--files - --stdin-filename <path>` without `--syntax-only`) and
+     * returns the path, relative to the sources directory, of the file the stdin content stands for. Nothing is read
+     * from stdin here, so an invalid request fails before any input is consumed.
+     */
+    fun resolveStdinOverlayPath(requestedFiles: List<String>, stdinFilename: String): String {
+        if (requestedFiles.any { it != STDIN_TARGET }) {
+            throw CliValidationException(
+                "Standard input ('--files -') cannot be combined with other --files entries; analyze the stdin content in a separate run"
+            )
+        }
+        if (stdinFilename.isBlank()) {
+            throw CliValidationException(
+                "--stdin-filename is required when analyzing standard input ('--files -') without --syntax-only; it names the project file the input stands for"
+            )
+        }
+        return resolveStdinVirtualPath(stdinFilename)
+    }
+
+    /**
+     * Builds the project view in which the file at [overlayPath] has [content] instead of its disk content: the disk
+     * version (if any) is replaced in the project sources, a file that does not exist yet is added, and the in-memory
+     * file is the only analysis target. When the file exists on disk, its discovered spelling is kept as identity, so
+     * issues are keyed exactly as in a `--files <path>` run.
+     */
+    fun applyStdinOverlay(projectSources: List<InputFile>, overlayPath: String, content: String): StdinOverlay {
+        val overlayAbsolute = baseDirPath.resolve(overlayPath).toAbsolutePath().normalize()
+        val diskFile = projectSources.firstOrNull { it.path().toAbsolutePath().normalize() == overlayAbsolute }
+        val target = InputFile.fromStdin(baseDirPath, content, diskFile?.pathRelativeToBase ?: overlayPath)
+        val sources = (projectSources.filter { it !== diskFile } + target).sortedBy { it.pathRelativeToBase }
+        return StdinOverlay(projectSources = sources, target = target)
+    }
+
+    class StdinOverlay(val projectSources: List<InputFile>, val target: InputFile)
+
+    /** Reads the whole standard input with the source charset, the same way [InputFile] reads a file. */
+    fun readStdin(): String = System.`in`.bufferedReader(charset).readText()
+
     fun resolveSyntaxOnlyTargets(
         requestedFiles: List<String>,
         stdinFilename: String = "",
@@ -94,9 +132,9 @@ internal class SourceSelection(
         val resolvedTargets = LinkedHashMap<String, InputFile>()
 
         for (rawTarget in requestedFiles) {
-            if (rawTarget == "-") {
+            if (rawTarget == STDIN_TARGET) {
                 if (!stdinRead) {
-                    stdinContent = stdinReader?.invoke() ?: System.`in`.bufferedReader(charset).readText()
+                    stdinContent = stdinReader?.invoke() ?: readStdin()
                     stdinRead = true
                 }
                 val virtualPath = resolveStdinVirtualPath(stdinFilename)
@@ -152,5 +190,10 @@ internal class SourceSelection(
             throw CliValidationException("--stdin-filename '$stdinFilename' has unsupported extension '$ext'. Supported extensions: $supportedExtensionsString")
         }
         return resolvedVirtual.invariantSeparatorsPathString
+    }
+
+    companion object {
+        /** The `--files` entry that stands for standard input. */
+        const val STDIN_TARGET = "-"
     }
 }

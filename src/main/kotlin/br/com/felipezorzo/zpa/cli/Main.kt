@@ -85,11 +85,16 @@ class Main(private val args: Arguments) {
         val extensions = args.extensions.split(',').map { it.trim().lowercase(Locale.ROOT) }
         val sourceSelection = SourceSelection(baseDirPath, extensions, StandardCharsets.UTF_8)
 
-        if (args.stdinFilename.isNotEmpty() && !args.files.contains("-")) {
+        val readsStdin = args.files.contains(SourceSelection.STDIN_TARGET)
+        if (args.stdinFilename.isNotEmpty() && !readsStdin) {
             throw CliValidationException("--stdin-filename can only be used when reading from standard input ('--files -')")
         }
-        if (args.files.contains("-") && !args.syntaxOnly) {
-            throw CliValidationException("Standard input ('--files -') is currently supported only with --syntax-only. Project-aware semantic analysis requires project-overlay support which is deferred.")
+        // Project-aware stdin analysis: the input is an overlay for one project file. Validated before plugins load
+        // and before anything is read from stdin.
+        val stdinOverlayPath = if (readsStdin && !args.syntaxOnly) {
+            sourceSelection.resolveStdinOverlayPath(args.files, args.stdinFilename)
+        } else {
+            null
         }
 
         var pluginManager: PluginManager? = null
@@ -172,6 +177,14 @@ class Main(private val args: Arguments) {
                         requestedFiles = args.files,
                         stdinFilename = args.stdinFilename
                     )
+                } else if (stdinOverlayPath != null) {
+                    val overlay = sourceSelection.applyStdinOverlay(
+                        projectSources = sourceSelection.discoverProjectSources(),
+                        overlayPath = stdinOverlayPath,
+                        content = sourceSelection.readStdin()
+                    )
+                    targetFiles = listOf(overlay.target)
+                    projectAnalysisContext = prepareProjectAnalysisContext(overlay.projectSources)
                 } else {
                     val projectSources = sourceSelection.discoverProjectSources()
                     targetFiles = sourceSelection.resolveProjectTargets(

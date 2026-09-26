@@ -204,6 +204,46 @@ class DaemonTest {
     }
 
     @Test
+    fun stdinIsAnalyzedWithTheProjectContext() {
+        sourcesDir.resolve("pkg.pks").writeText(
+            "CREATE OR REPLACE PACKAGE pkg AS\n  PROCEDURE work(payload IN OUT NOCOPY CLOB);\nEND pkg;\n"
+        )
+        val body = "CREATE OR REPLACE PACKAGE BODY pkg AS\n  PROCEDURE work(payload IN OUT CLOB) IS\n  BEGIN\n    NULL;\n  END work;\nEND pkg;\n"
+        fun stdinRequest(id: Int, content: String) = mapper.writeValueAsString(
+            mapOf(
+                "id" to id,
+                "args" to listOf(
+                    "--sources", sourcesDir.absolutePath, "--files", "-", "--stdin-filename", "pkg.pkb",
+                    "--output-format", CONSOLE
+                ),
+                "stdin" to content
+            )
+        )
+
+        // The buffer is a new file (pkg.pkb is not on disk); the second request fixes it, the third omits "stdin".
+        val result = runDaemon(
+            stdinRequest(1, body),
+            stdinRequest(2, body.replace("IN OUT CLOB", "IN OUT NOCOPY CLOB")),
+            request(3, "--sources", sourcesDir.absolutePath, "--files", "-"),
+        )
+
+        val mismatch = result.lines[1]
+        assertEquals(0, mismatch.get("exitCode").asInt(), mismatch.toString())
+        val stdout = mismatch.get("stdout").asText()
+        assertTrue(stdout.contains("File: pkg.pkb"), stdout)
+        assertTrue(stdout.contains("zpa:PackageBodyParameterNocopy"), stdout)
+        assertFalse(stdout.contains("test.sql"), "only the stdin file is analyzed: $stdout")
+
+        val fixed = result.lines[2]
+        assertEquals(0, fixed.get("exitCode").asInt(), fixed.toString())
+        assertFalse(fixed.get("stdout").asText().contains("PackageBodyParameterNocopy"), fixed.toString())
+
+        val missingFilename = result.lines[3]
+        assertEquals(2, missingFilename.get("exitCode").asInt(), missingFilename.toString())
+        assertTrue(missingFilename.get("stderr").asText().contains("--stdin-filename is required"), missingFilename.toString())
+    }
+
+    @Test
     fun repeatedRequestsDoNotLeakTemporaryDirectoriesOrThreads() {
         val tempRoot = Path(System.getProperty("java.io.tmpdir")).toFile()
         val pluginTempDir = Regex("zpa-cli\\d+")
