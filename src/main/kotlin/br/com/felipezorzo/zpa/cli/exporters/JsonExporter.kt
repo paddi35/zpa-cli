@@ -49,7 +49,21 @@ class JsonExporter(
                 range = range,
                 rule = issue.check.activeRule.ruleKey.toString(),
                 severity = issue.check.activeRule.severity,
-                message = loc.message()
+                message = loc.message(),
+                quickFixes = issue.quickFixes.takeIf { it.isNotEmpty() }?.map { quickFix ->
+                    DiagnosticQuickFix(
+                        message = quickFix.message(),
+                        edits = quickFix.edits().map { edit ->
+                            DiagnosticTextEdit(
+                                startLine = edit.startLine(),
+                                startColumn = edit.startLineOffset(),
+                                endLine = edit.endLine(),
+                                endColumn = edit.endLineOffset(),
+                                text = edit.text()
+                            )
+                        }
+                    )
+                }
             )
         }
 
