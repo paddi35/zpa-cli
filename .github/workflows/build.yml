@@ -52,10 +52,31 @@ jobs:
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: liberica
-          java-version: '25'
+          # 21 builds the ZPA fork below; the last entry (25) is the default JAVA_HOME.
+          java-version: |
+            21
+            25
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+
+      # Fork only: build against the ZPA fork (paddi35/zpa) instead of the upstream snapshot from Sonatype,
+      # which lacks the fork's changes. The version exists only in mavenLocal, so a missing artifact fails
+      # the build instead of silently falling back to upstream.
+      - name: Check out ZPA fork
+        if: github.repository == 'paddi35/zpa-cli'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: paddi35/zpa
+          ref: main
+          path: zpa-fork
+
+      - name: Publish ZPA fork to mavenLocal
+        if: github.repository == 'paddi35/zpa-cli'
+        working-directory: zpa-fork
+        run: |
+          ./gradlew publishToMavenLocal -Pversion=4.1.1-local-SNAPSHOT
+          echo "ORG_GRADLE_PROJECT_zpaVersion=4.1.1-local-SNAPSHOT" >> "$GITHUB_ENV"
 
       - name: Build with Gradle
         run: ./gradlew build --refresh-dependencies
