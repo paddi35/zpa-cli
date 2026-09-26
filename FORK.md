@@ -13,7 +13,8 @@ the upstream `main` branch):
   carries `Implementation-Version`.
 - Quick fixes offered by the rules are exported as an optional `quickFixes` field per issue in the `json` and
   `sq-generic-issue-import` formats; the `console` format marks such issues with `[quick fix available]`.
-- CI: Docker Hub publishing is skipped outside `felipebz/zpa-cli`.
+- CI: Docker Hub publishing is skipped outside `felipebz/zpa-cli`, and the fork builds against the ZPA fork
+  (`paddi35/zpa`, published to mavenLocal as `4.1.1-local-SNAPSHOT`) instead of the upstream snapshot.
 
 Local builds use the ZPA version given by `-PzpaVersion` (for example a `-local-SNAPSHOT` build of
 the `paddi35/zpa` fork) and are not official zpa-cli releases.
