@@ -484,7 +484,7 @@ class FocusedValidationTest {
     }
 
     @Test
-    fun stdinRejectedInNormalAnalysis() {
+    fun stdinWithoutStdinFilenameRejectedInNormalAnalysis() {
         val root = Files.createTempDirectory("zpa-cli-stdin-rejected").toFile()
         val originalIn = System.`in`
         try {

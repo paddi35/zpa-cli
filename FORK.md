@@ -13,6 +13,8 @@ the upstream `main` branch):
   carries `Implementation-Version`.
 - Quick fixes offered by the rules are exported as an optional `quickFixes` field per issue in the `json` and
   `sq-generic-issue-import` formats; the `console` format marks such issues with `[quick fix available]`.
+- Standard input (`--files - --stdin-filename <path>`) can be analyzed with the project context, as an overlay of the
+  project file `<path>` (previously only with `--syntax-only`).
 - CI: Docker Hub publishing is skipped outside `felipebz/zpa-cli`, and the fork builds against the ZPA fork
   (`paddi35/zpa`, published to mavenLocal as `4.1.1-local-SNAPSHOT`) instead of the upstream snapshot.
 
