@@ -164,25 +164,51 @@ class StdinProjectOverlayTest {
     fun stdinIsDecodedAsUtf8LikeFiles() {
         sourcesDir.resolve("pkg.pkb").writeText(BODY_MATCH)
         val buffer = "BEGIN\n  -- Größe\n  IF 1 = NULL THEN\n    NULL;\n  END IF;\nEND;\n/\n"
-        val outputFile = root.resolve("out.json")
-
-        // A disk file and the same bytes on stdin (with and without BOM) give the same diagnostics.
-        fun diagnosticsFor(bytes: ByteArray, fromStdin: Boolean): List<String> {
-            outputFile.delete()
-            val result = if (fromStdin) {
-                runBytes(bytes, "--files", "-", "--stdin-filename", "pkg.pkb", "--output-format", JSON, "--output-file", outputFile.absolutePath)
-            } else {
-                sourcesDir.resolve("pkg.pkb").writeBytes(bytes)
-                runBytes(ByteArray(0), "--files", "pkg.pkb", "--output-format", JSON, "--output-file", outputFile.absolutePath)
-            }
-            assertEquals(0, result.exitCode, result.stderr)
-            return mapper.readTree(outputFile).get("diagnostics").map { "${it.get("rule").asText()}@${it.get("range")}" }
-        }
-
         val plain = buffer.toByteArray(UTF_8)
-        val withBom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + plain
-        assertEquals(diagnosticsFor(plain, fromStdin = false), diagnosticsFor(plain, fromStdin = true))
-        assertEquals(diagnosticsFor(withBom, fromStdin = false), diagnosticsFor(withBom, fromStdin = true))
+        val withBom = UTF8_BOM + plain
+
+        // A disk file and the same bytes on stdin give the same diagnostics, and a BOM changes nothing.
+        val expected = diagnosticsFor(plain, fromStdin = false).map { "${it.get("rule").asText()}@${it.get("range")}" }
+        assertTrue(expected.any { it.startsWith("zpa:ComparisonWithNull@") }, expected.toString())
+        for (bytes in listOf(plain, withBom)) {
+            for (fromStdin in listOf(false, true)) {
+                val actual = diagnosticsFor(bytes, fromStdin).map { "${it.get("rule").asText()}@${it.get("range")}" }
+                assertEquals(expected, actual, "bom=${bytes !== plain}, stdin=$fromStdin")
+            }
+        }
+    }
+
+    @Test
+    fun byteOrderMarkDoesNotShiftColumnsOnTheFirstLine() {
+        sourcesDir.resolve("pkg.pkb").writeText(BODY_MATCH)
+        // The issue and its quick fix are on line 1, after the position of the BOM.
+        val plain = "BEGIN IF x = NULL THEN NULL; END IF; END;\n/\n".toByteArray(UTF_8)
+
+        val expected = diagnosticsFor(plain, fromStdin = false)
+        val comparison = expected.single { it.get("rule").asText() == "zpa:ComparisonWithNull" }
+        assertEquals(1, comparison.get("range").get("startLine").asInt())
+        assertEquals("BEGIN IF ".length, comparison.get("range").get("startColumn").asInt())
+        assertTrue(comparison.has("quickFixes"), comparison.toString())
+
+        for (fromStdin in listOf(false, true)) {
+            val actual = diagnosticsFor(UTF8_BOM + plain, fromStdin)
+            assertTrue(actual.none { it.get("kind").asText() == "SYNTAX" }, actual.toString())
+            assertEquals(expected, actual, "stdin=$fromStdin")
+        }
+    }
+
+    /** Analyzes [bytes] as `pkg.pkb`, either written to disk or passed on stdin, and returns the json diagnostics. */
+    private fun diagnosticsFor(bytes: ByteArray, fromStdin: Boolean): List<JsonNode> {
+        val outputFile = root.resolve("out.json")
+        outputFile.delete()
+        val result = if (fromStdin) {
+            runBytes(bytes, "--files", "-", "--stdin-filename", "pkg.pkb", "--output-format", JSON, "--output-file", outputFile.absolutePath)
+        } else {
+            sourcesDir.resolve("pkg.pkb").writeBytes(bytes)
+            runBytes(ByteArray(0), "--files", "pkg.pkb", "--output-format", JSON, "--output-file", outputFile.absolutePath)
+        }
+        assertEquals(0, result.exitCode, result.stderr)
+        return mapper.readTree(outputFile).get("diagnostics").toList()
     }
 
     @Test
@@ -228,6 +254,8 @@ class StdinProjectOverlayTest {
 
     companion object {
         const val NOCOPY_RULE = "zpa:PackageBodyParameterNocopy"
+
+        val UTF8_BOM = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
 
         val SPEC = """
             CREATE OR REPLACE PACKAGE pkg AS

@@ -220,6 +220,23 @@ class SourceSelectionTest {
     }
 
     @Test
+    fun contentsDropALeadingByteOrderMark() {
+        val root = Files.createTempDirectory("zpa-source-selection-test").toFile()
+        try {
+            val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+            root.resolve("bom.sql").writeBytes(bom + "SELECT 1 FROM DUAL;".toByteArray())
+            val selection = SourceSelection(root.toPath(), defaultExtensions)
+
+            assertEquals("SELECT 1 FROM DUAL;", selection.discoverProjectSources().single().contents())
+            assertEquals("SELECT 1 FROM DUAL;", selection.applyStdinOverlay(emptyList(), "stdin.sql", "﻿SELECT 1 FROM DUAL;").target.contents())
+            // Only a leading BOM is dropped.
+            assertEquals("SELECT '﻿' FROM DUAL;", InputFile.fromStdin(root.toPath(), "SELECT '﻿' FROM DUAL;").contents())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun stdinIsNotAProjectTarget() {
         val root = Files.createTempDirectory("zpa-source-selection-test").toFile()
         try {

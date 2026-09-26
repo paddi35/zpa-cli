@@ -31,10 +31,11 @@ class InputFile(
         }
     }
 
+    /** The source text without a leading byte order mark, like SonarQube's `InputFile.contents()`. */
     override fun contents(): String =
-        inMemoryContent ?: file!!.inputStream().use {
+        (inMemoryContent ?: file!!.inputStream().use {
             it.bufferedReader(charset).use { r -> r.readText() }
-        }
+        }).removePrefix(BYTE_ORDER_MARK)
 
     override fun fileName(): String =
         virtualPath?.let { Paths.get(it).name.ifEmpty { it } } ?: file!!.name
@@ -71,6 +72,8 @@ class InputFile(
     }
 
     companion object {
+        private const val BYTE_ORDER_MARK = "﻿"
+
         fun fromStdin(
             baseDirPath: Path,
             content: String,
