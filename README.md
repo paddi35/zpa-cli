@@ -174,6 +174,25 @@ Relative paths (`--sources`, `--output-file`, `--config`, ...) resolve against t
 in, not per request, so clients should pass absolute paths. Plugins are loaded per request, so plugins added to the
 `plugins` folder are picked up without restarting the daemon.
 
+## Capabilities file (fork)
+
+The zpa-cli jar (`lib/zpa-cli-<version>.jar`) contains `META-INF/zpa-cli-capabilities.properties`, so clients can
+detect the fork features of an installation offline, without starting it:
+
+```properties
+daemon=1
+stdin-project=1
+quick-fixes=1
+```
+
+* `daemon`: [daemon mode](#daemon-mode-fork).
+* `stdin-project`: [analyzing stdin with the project context](#analyzing-stdin-with-the-project-context-fork).
+* `quick-fixes`: [quick fixes](#quick-fixes-fork) in the `json` and `sq-generic-issue-import` formats.
+
+This is a stable contract: there is one key per fork feature present in the build, and its value is the revision of the
+feature (an integer, currently `1`, raised only for incompatible changes). Keys are not renamed or removed while the
+feature exists. A missing key, or a missing file (as in the official releases), means the feature is absent.
+
 ## Contributing
 
 Please read our [contributing guidelines](CONTRIBUTING.md) to see how you can contribute to this project.
