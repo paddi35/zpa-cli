@@ -30,9 +30,18 @@ class Arguments {
     @Parameter(names = ["--stdin-filename"], description = "Virtual filename when reading from stdin")
     var stdinFilename: String = ""
 
+    @Parameter(
+        names = [CONTEXT_OVERLAY_OPTION],
+        arity = 2,
+        description = "<path> <file>: use the content of <file> for the project file <path> as project context only, e.g. an unsaved editor buffer (repeatable)"
+    )
+    var contextOverlays: List<String> = ArrayList()
+
     @Parameter(names = ["--fail-on"], description = "Failure threshold for validation exit code (none, any, syntax, blocker, critical, major, minor, info)")
     var failOn: String? = null
 
     @Parameter(names = ["--help", "-h"], help = true, description = "Display help information")
     var help: Boolean = false
 }
+
+const val CONTEXT_OVERLAY_OPTION = "--context-overlay"

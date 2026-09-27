@@ -8,7 +8,9 @@ import br.com.felipezorzo.zpa.cli.exporters.ConsoleExporter
 import br.com.felipezorzo.zpa.cli.exporters.GenericIssueFormatExporter
 import br.com.felipezorzo.zpa.cli.exporters.IssueExporter
 import br.com.felipezorzo.zpa.cli.exporters.JsonExporter
+import br.com.felipezorzo.zpa.cli.plugin.PerRunPlugins
 import br.com.felipezorzo.zpa.cli.plugin.PluginManager
+import br.com.felipezorzo.zpa.cli.plugin.PluginProvider
 import br.com.felipezorzo.zpa.cli.rules.CliActiveRules
 import com.beust.jcommander.JCommander
 import com.beust.jcommander.ParameterException
@@ -31,29 +33,20 @@ import com.felipebz.zpa.squid.AstScanner
 import com.felipebz.zpa.squid.ProgressReport
 import com.felipebz.zpa.squid.ZpaIssue
 import com.felipebz.zpa.utils.log.Loggers
-import me.lucko.jarrelocator.JarRelocator
-import me.lucko.jarrelocator.Relocation
 import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.Path
 import java.util.*
 import java.util.concurrent.TimeUnit
 import java.util.logging.LogManager
 import java.util.stream.Collectors
-import kotlin.io.path.absolute
-import kotlin.io.path.exists
-import kotlin.io.path.extension
 import kotlin.io.path.invariantSeparatorsPathString
-import kotlin.io.path.listDirectoryEntries
-import kotlin.io.path.name
 import kotlin.system.measureTimeMillis
 
 const val CONSOLE = "console"
 const val GENERIC_ISSUE_FORMAT = "sq-generic-issue-import"
 const val JSON = "json"
-class Main(private val args: Arguments) {
+class Main(private val args: Arguments, private val plugins: PluginProvider = PerRunPlugins()) {
 
     val mapper = jacksonObjectMapper()
 
@@ -96,212 +89,173 @@ class Main(private val args: Arguments) {
         } else {
             null
         }
-
-        var pluginManager: PluginManager? = null
-        var pluginTempDir: Path? = null
-        var validationFailed = false
-
-        try {
-            if (!args.syntaxOnly) {
-                val tempDir = Files.createTempDirectory("zpa-cli")
-                pluginTempDir = tempDir
-                pluginManager = createPluginManager(tempDir)
+        // Unsaved content of other project files, used as project context only. Validated before plugins load and
+        // before anything is read from stdin.
+        val contextOverlays = if (args.contextOverlays.isEmpty()) {
+            emptyList()
+        } else {
+            if (args.syntaxOnly) {
+                throw CliValidationException("--context-overlay cannot be used with --syntax-only, which has no project context")
             }
+            sourceSelection.resolveContextOverlays(args.contextOverlays, args.files, stdinOverlayPath)
+        }
 
-            if (pluginManager != null) {
-                pluginManager.loadPlugins()
-                pluginManager.startPlugins()
-
+        val validationFailed = if (args.syntaxOnly) {
+            analyze(null, format, failOnThreshold, config, sourceSelection, stdinOverlayPath, contextOverlays)
+        } else {
+            plugins.withPlugins { pluginManager ->
                 for (plugin in pluginManager.startedPlugins) {
                     LOG.info("Plugin '${plugin.descriptor.pluginId}@${plugin.descriptor.version}' loaded")
                 }
-            }
-
-            val ellapsedTime = measureTimeMillis {
-                val ruleMetadataLoader = RuleMetadataLoader()
-
-                val checkList = mutableListOf<PlSqlVisitor>()
-
-                if (args.syntaxOnly) {
-                    val repository = Repository("zpa")
-                    CustomAnnotationBasedRulesDefinition.load(
-                        repository, "plsqlopen",
-                        listOf(ParsingErrorCheck::class.java), ruleMetadataLoader
-                    )
-                    val activeRules = CliActiveRules(ConfigFile(base = BaseRuleCategory.DEFAULT))
-                    activeRules.addRepository(repository)
-                    val checks = ZpaChecks(activeRules, repository.key, ruleMetadataLoader)
-                        .addAnnotatedChecks(listOf(ParsingErrorCheck::class.java))
-                    checkList.addAll(checks.all())
-                } else {
-                    val activeRules = getActiveRules(config)
-
-                    val rulesDefinitions = listOf(
-                        DefaultRulesDefinition(),
-                        *pluginManager!!.getExtensions(ZpaRulesDefinition::class.java).toTypedArray()
-                    )
-
-                    val repositories = rulesDefinitions.map { rulesDefinition ->
-                        val repository = Repository(rulesDefinition.repositoryKey())
-                        CustomAnnotationBasedRulesDefinition.load(
-                            repository, "plsqlopen",
-                            rulesDefinition.checkClasses().toList(), ruleMetadataLoader
-                        )
-
-                        activeRules.addRepository(repository)
-                        repository
-                    }
-
-                    try {
-                        activeRules.validateConfiguration()
-                    } catch (e: IllegalArgumentException) {
-                        throw CliValidationException("Invalid configuration: ${e.message}", e)
-                    }
-
-                    for ((rulesDefinition, repository) in rulesDefinitions.zip(repositories)) {
-                        val checks = ZpaChecks(activeRules, repository.key, ruleMetadataLoader)
-                            .addAnnotatedChecks(rulesDefinition.checkClasses().toList())
-
-                        checkList.addAll(checks.all())
-                    }
-                }
-
-                val metadata = if (args.syntaxOnly) null else FormsMetadata.loadFromFile(args.formsMetadata)
-
-                val targetFiles: List<InputFile>
-                val projectAnalysisContext: ProjectAnalysisContext
-
-                if (args.syntaxOnly) {
-                    projectAnalysisContext = ProjectAnalysisContext.NOT_PREPARED
-                    targetFiles = sourceSelection.resolveSyntaxOnlyTargets(
-                        requestedFiles = args.files,
-                        stdinFilename = args.stdinFilename
-                    )
-                } else if (stdinOverlayPath != null) {
-                    val overlay = sourceSelection.applyStdinOverlay(
-                        projectSources = sourceSelection.discoverProjectSources(),
-                        overlayPath = stdinOverlayPath,
-                        content = sourceSelection.readStdin()
-                    )
-                    targetFiles = listOf(overlay.target)
-                    projectAnalysisContext = prepareProjectAnalysisContext(overlay.projectSources)
-                } else {
-                    val projectSources = sourceSelection.discoverProjectSources()
-                    targetFiles = sourceSelection.resolveProjectTargets(
-                        projectSources = projectSources,
-                        requestedFiles = args.files
-                    )
-                    projectAnalysisContext = prepareProjectAnalysisContext(projectSources)
-                }
-
-                val scanner = AstScanner(
-                    checkList,
-                    metadata,
-                    true,
-                    StandardCharsets.UTF_8,
-                    projectAnalysisContext
-                )
-
-                // Started right before the guarded scan, so its thread is always stopped or cancelled.
-                val progressReport = ProgressReport("Report about progress of code analyzer", TimeUnit.SECONDS.toMillis(10))
-                progressReport.start(targetFiles.map { it.pathRelativeToBase }.toList())
-
-                val rawIssues: List<ZpaIssue>
-                var scanSucceeded = false
-                try {
-                    rawIssues = targetFiles.parallelStream().flatMap { file ->
-                        val scannerResult = scanner.scanFile(file, fileId = FileId(file.pathRelativeToBase))
-                        progressReport.nextFile()
-                        NoSonarFilter.filter(scannerResult.issues, scannerResult.linesWithNoSonar).stream()
-                    }.collect(Collectors.toList())
-                    scanSucceeded = true
-                } finally {
-                    if (scanSucceeded) {
-                        progressReport.stop()
-                    } else {
-                        progressReport.cancel()
-                    }
-                }
-
-                val issues = IssueOrdering.sort(rawIssues)
-
-                validationFailed = failOnThreshold.hasFailure(issues)
-
-                val issueExporter: IssueExporter = when (format) {
-                    CONSOLE -> ConsoleExporter()
-                    GENERIC_ISSUE_FORMAT -> GenericIssueFormatExporter(args.outputFile)
-                    JSON -> JsonExporter(
-                        outputFile = args.outputFile,
-                        validationFailed = validationFailed,
-                        threshold = failOnThreshold.cliName
-                    )
-                    else -> throw CliValidationException("Invalid output format: '${args.outputFormat}'")
-                }
-
-                issueExporter.export(issues)
-            }
-
-            LOG.info("Time elapsed: $ellapsedTime ms")
-        } finally {
-            if (pluginManager != null) {
-                try {
-                    pluginManager.stopPlugins()
-                } catch (e: Exception) {
-                    LOG.warn("Failed to stop plugins: ${e.message}")
-                }
-                try {
-                    pluginManager.unloadPlugins()
-                } catch (e: Exception) {
-                    LOG.warn("Failed to unload plugins: ${e.message}")
-                }
-            }
-            if (pluginTempDir != null) {
-                deleteTempDir(pluginTempDir)
+                analyze(pluginManager, format, failOnThreshold, config, sourceSelection, stdinOverlayPath, contextOverlays)
             }
         }
 
         return if (validationFailed) 1 else 0
     }
 
-    private fun createPluginManager(tempDir: Path): PluginManager {
-        val codePath = Path.of(Main::class.java.protectionDomain.codeSource.location.toURI())
-        val appHome = if (codePath.extension == "jar" && (codePath.parent.name == "lib" || codePath.parent.name == "jars")) {
-            codePath.parent.parent.absolute()
-        } else {
-            Path.of(".")
-        }
+    /** Runs the analysis with the plugins of [pluginManager] (null in syntax-only mode); returns whether validation failed. */
+    private fun analyze(
+        pluginManager: PluginManager?,
+        format: String,
+        failOnThreshold: FailOnThreshold,
+        config: ConfigFile,
+        sourceSelection: SourceSelection,
+        stdinOverlayPath: String?,
+        contextOverlays: List<SourceSelection.ContextOverlay>,
+    ): Boolean {
+        var validationFailed = false
+        val ellapsedTime = measureTimeMillis {
+            val ruleMetadataLoader = RuleMetadataLoader()
 
-        val pluginRoot = appHome.resolve("plugins")
-        if (pluginRoot.exists()) {
-            pluginRoot.listDirectoryEntries("*.jar").forEach {
-                val input = it.toFile()
-                val output = tempDir.resolve(it.fileName).toFile()
+            val checkList = mutableListOf<PlSqlVisitor>()
 
-                val rules: MutableList<Relocation> = ArrayList<Relocation>()
-                rules.add(Relocation("org.sonar.plugins.plsqlopen.api.sslr", "com.felipebz.flr.api"))
-                rules.add(Relocation("org.sonar.plugins.plsqlopen.api", "com.felipebz.zpa.api"))
+            if (args.syntaxOnly) {
+                val repository = Repository("zpa")
+                CustomAnnotationBasedRulesDefinition.load(
+                    repository, "plsqlopen",
+                    listOf(ParsingErrorCheck::class.java), ruleMetadataLoader
+                )
+                val activeRules = CliActiveRules(ConfigFile(base = BaseRuleCategory.DEFAULT))
+                activeRules.addRepository(repository)
+                val checks = ZpaChecks(activeRules, repository.key, ruleMetadataLoader)
+                    .addAnnotatedChecks(listOf(ParsingErrorCheck::class.java))
+                checkList.addAll(checks.all())
+            } else {
+                val activeRules = getActiveRules(config)
 
-                val relocator = JarRelocator(input, output, rules)
+                val rulesDefinitions = listOf(
+                    DefaultRulesDefinition(),
+                    *pluginManager!!.getExtensions(ZpaRulesDefinition::class.java).toTypedArray()
+                )
+
+                val repositories = rulesDefinitions.map { rulesDefinition ->
+                    val repository = Repository(rulesDefinition.repositoryKey())
+                    CustomAnnotationBasedRulesDefinition.load(
+                        repository, "plsqlopen",
+                        rulesDefinition.checkClasses().toList(), ruleMetadataLoader
+                    )
+
+                    activeRules.addRepository(repository)
+                    repository
+                }
+
                 try {
-                    relocator.run()
-                } catch (e: IOException) {
-                    throw RuntimeException("Unable to relocate", e)
+                    activeRules.validateConfiguration()
+                } catch (e: IllegalArgumentException) {
+                    throw CliValidationException("Invalid configuration: ${e.message}", e)
+                }
+
+                for ((rulesDefinition, repository) in rulesDefinitions.zip(repositories)) {
+                    val checks = ZpaChecks(activeRules, repository.key, ruleMetadataLoader)
+                        .addAnnotatedChecks(rulesDefinition.checkClasses().toList())
+
+                    checkList.addAll(checks.all())
                 }
             }
+
+            val metadata = if (args.syntaxOnly) null else FormsMetadata.loadFromFile(args.formsMetadata)
+
+            val targetFiles: List<InputFile>
+            val projectAnalysisContext: ProjectAnalysisContext
+
+            if (args.syntaxOnly) {
+                projectAnalysisContext = ProjectAnalysisContext.NOT_PREPARED
+                targetFiles = sourceSelection.resolveSyntaxOnlyTargets(
+                    requestedFiles = args.files,
+                    stdinFilename = args.stdinFilename
+                )
+            } else if (stdinOverlayPath != null) {
+                val overlay = sourceSelection.applyStdinOverlay(
+                    projectSources = sourceSelection.applyContextOverlays(
+                        sourceSelection.discoverProjectSources(), contextOverlays
+                    ),
+                    overlayPath = stdinOverlayPath,
+                    content = sourceSelection.readStdin()
+                )
+                targetFiles = listOf(overlay.target)
+                projectAnalysisContext = prepareProjectAnalysisContext(overlay.projectSources)
+            } else {
+                val projectSources = sourceSelection.discoverProjectSources()
+                // Targets are files on disk; the overlays (never a target) only change the project context.
+                targetFiles = sourceSelection.resolveProjectTargets(
+                    projectSources = projectSources,
+                    requestedFiles = args.files
+                )
+                projectAnalysisContext = prepareProjectAnalysisContext(
+                    sourceSelection.applyContextOverlays(projectSources, contextOverlays)
+                )
+            }
+
+            val scanner = AstScanner(
+                checkList,
+                metadata,
+                true,
+                StandardCharsets.UTF_8,
+                projectAnalysisContext
+            )
+
+            // Started right before the guarded scan, so its thread is always stopped or cancelled.
+            val progressReport = ProgressReport("Report about progress of code analyzer", TimeUnit.SECONDS.toMillis(10))
+            progressReport.start(targetFiles.map { it.pathRelativeToBase }.toList())
+
+            val rawIssues: List<ZpaIssue>
+            var scanSucceeded = false
+            try {
+                rawIssues = targetFiles.parallelStream().flatMap { file ->
+                    val scannerResult = scanner.scanFile(file, fileId = FileId(file.pathRelativeToBase))
+                    progressReport.nextFile()
+                    NoSonarFilter.filter(scannerResult.issues, scannerResult.linesWithNoSonar).stream()
+                }.collect(Collectors.toList())
+                scanSucceeded = true
+            } finally {
+                if (scanSucceeded) {
+                    progressReport.stop()
+                } else {
+                    progressReport.cancel()
+                }
+            }
+
+            val issues = IssueOrdering.sort(rawIssues)
+
+            validationFailed = failOnThreshold.hasFailure(issues)
+
+            val issueExporter: IssueExporter = when (format) {
+                CONSOLE -> ConsoleExporter()
+                GENERIC_ISSUE_FORMAT -> GenericIssueFormatExporter(args.outputFile)
+                JSON -> JsonExporter(
+                    outputFile = args.outputFile,
+                    validationFailed = validationFailed,
+                    threshold = failOnThreshold.cliName
+                )
+                else -> throw CliValidationException("Invalid output format: '${args.outputFormat}'")
+            }
+
+            issueExporter.export(issues)
         }
 
-        return PluginManager(tempDir)
-    }
-
-    /**
-     * Deletes the relocated plugin JARs at the end of every run instead of relying on deleteOnExit, so repeated
-     * runs in one JVM (daemon mode) don't accumulate temporary directories and exit-hook entries.
-     */
-    private fun deleteTempDir(dir: Path) {
-        if (!dir.toFile().deleteRecursively()) {
-            LOG.warn("Failed to delete temporary directory: $dir")
-            dir.toFile().walkTopDown().forEach { it.deleteOnExit() }
-        }
+        LOG.info("Time elapsed: $ellapsedTime ms")
+        return validationFailed
     }
 
     private fun prepareProjectAnalysisContext(files: Collection<InputFile>): ProjectAnalysisContext =
@@ -368,7 +322,7 @@ class Main(private val args: Arguments) {
     }
 }
 
-fun execute(args: Array<String>): Int {
+fun execute(args: Array<String>, plugins: PluginProvider = PerRunPlugins()): Int {
     val arguments = Arguments()
     val cmd = JCommander.newBuilder()
         .addObject(arguments)
@@ -376,13 +330,14 @@ fun execute(args: Array<String>): Int {
         .build()
     return try {
         cmd.parse(*args)
+        checkContextOverlayValues(args)
         if (arguments.help) {
             val sb = StringBuilder()
             cmd.usage(sb)
             println(sb.toString())
             return 0
         }
-        Main(arguments).run()
+        Main(arguments, plugins).run()
     } catch (exception: ParameterException) {
         System.err.println(exception.message)
         val sb = StringBuilder()
@@ -396,6 +351,21 @@ fun execute(args: Array<String>): Int {
         System.err.println("Execution failed: ${exception.message}")
         exception.printStackTrace(System.err)
         3
+    }
+}
+
+/**
+ * JCommander drops empty arguments and accepts a trailing option with fewer values than its arity, which would shift the
+ * `<path> <file>` pairs of `--context-overlay`; so both values are checked on the raw arguments.
+ */
+private fun checkContextOverlayValues(args: Array<String>) {
+    for ((index, arg) in args.withIndex()) {
+        if (arg == CONTEXT_OVERLAY_OPTION) {
+            val values = args.drop(index + 1).take(2)
+            if (values.size < 2 || values.any { it.isBlank() }) {
+                throw CliValidationException("$CONTEXT_OVERLAY_OPTION expects two non-empty values: <path> <file>")
+            }
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 package br.com.felipezorzo.zpa.cli
 
+import br.com.felipezorzo.zpa.cli.plugin.CachedPlugins
+import br.com.felipezorzo.zpa.cli.testplugin.TestPlugin
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.io.ByteArrayInputStream
@@ -45,10 +47,13 @@ class DaemonTest {
 
     private class Result(val exitCode: Int, val lines: List<JsonNode>)
 
-    private fun runDaemon(vararg requests: String): Result {
+    private fun runDaemon(vararg requests: String): Result =
+        runDaemon(CachedPlugins(root.resolve("no-plugins").toPath()), *requests)
+
+    private fun runDaemon(plugins: CachedPlugins, vararg requests: String): Result {
         val input = ByteArrayInputStream(requests.joinToString("\n", postfix = "\n").toByteArray(UTF_8))
         val output = ByteArrayOutputStream()
-        val exitCode = Daemon(input, PrintStream(output, true, UTF_8), version = "test").run()
+        val exitCode = Daemon(input, PrintStream(output, true, UTF_8), version = "test", plugins = plugins).run()
         val lines = output.toString(UTF_8).lines().filter { it.isNotEmpty() }.map { mapper.readTree(it) }
         return Result(exitCode, lines)
     }
@@ -250,16 +255,26 @@ class DaemonTest {
         fun pluginTempDirs() = tempRoot.listFiles().orEmpty().filter { pluginTempDir.matches(it.name) }.map { it.name }.toSet()
         fun threads() = Thread.getAllStackTraces().keys.filter { it.isAlive && !it.name.startsWith("ForkJoinPool") }
 
-        runDaemon(analysis(0, CONSOLE))
+        // With a custom rules plugin, which the daemon loads once and keeps until it stops.
+        val pluginDir = root.resolve("plugins")
+        TestPlugin.writeJar(pluginDir.resolve("test-plugin.jar"), "testplugin", "test-plugin", "from the plugin")
+
+        runDaemon(CachedPlugins(pluginDir.toPath()), analysis(0, CONSOLE))
         val dirsBefore = pluginTempDirs()
         val threadsBefore = threads().size
 
+        val plugins = CachedPlugins(pluginDir.toPath())
         val requests = (1..20).map { analysis(it, JSON, root.resolve("out-$it.json")) }
-        val result = runDaemon(*requests.toTypedArray())
+        val result = runDaemon(plugins, *requests.toTypedArray())
 
         assertEquals(21, result.lines.size)
         assertTrue(result.lines.drop(1).all { it.get("exitCode").asInt() == 0 })
-        assertEquals(emptySet(), pluginTempDirs() - dirsBefore, "plugin temp dirs must be deleted after each run")
+        for (i in 1..20) {
+            val rules = mapper.readTree(root.resolve("out-$i.json")).get("diagnostics").map { it.get("rule").asText() }
+            assertTrue("test-plugin:${TestPlugin.RULE_KEY}" in rules, "request $i: $rules")
+        }
+        assertEquals(1, plugins.loadCount, "the plugins are loaded once per daemon")
+        assertEquals(emptySet(), pluginTempDirs() - dirsBefore, "plugin temp dirs must be deleted when the daemon stops")
         assertTrue(threads().none { it.name.startsWith("Report about progress") })
         assertTrue(threads().size <= threadsBefore, "threads before: $threadsBefore, after: ${threads().map { it.name }}")
     }

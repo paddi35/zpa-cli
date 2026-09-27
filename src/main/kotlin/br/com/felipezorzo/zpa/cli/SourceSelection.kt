@@ -3,6 +3,7 @@ package br.com.felipezorzo.zpa.cli
 import com.felipebz.zpa.api.PlSqlFile
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
 import kotlin.io.path.exists
@@ -115,6 +116,70 @@ internal class SourceSelection(
 
     class StdinOverlay(val projectSources: List<InputFile>, val target: InputFile)
 
+    /**
+     * A `--context-overlay`: the project file at [path] (relative to the sources directory) has the content of
+     * [contentFile] instead of its disk content. It is project context only, never an analysis target.
+     */
+    class ContextOverlay(val path: String, val contentFile: Path)
+
+    /**
+     * Validates the `--context-overlay <path> <file>` pairs in [rawPairs] (flattened, as parsed). Each path must be
+     * inside the sources directory, have a supported extension, be given once and be neither the stdin file
+     * ([stdinOverlayPath]) nor another analysis target in [requestedFiles]; each content file must exist. Nothing is
+     * read here.
+     */
+    fun resolveContextOverlays(
+        rawPairs: List<String>,
+        requestedFiles: List<String>,
+        stdinOverlayPath: String?
+    ): List<ContextOverlay> {
+        if (rawPairs.size % 2 != 0) {
+            // JCommander passes a trailing '--context-overlay <path>' without its file on.
+            throw CliValidationException("--context-overlay expects two values: <path> <file>")
+        }
+        if (requestedFiles.isEmpty()) {
+            throw CliValidationException(
+                "--context-overlay requires explicit analysis targets ('--files <path>...' or '--files -'); the overlays are project context only"
+            )
+        }
+        val targets = requestedFiles.filter { it != STDIN_TARGET }.map { resolveCandidate(it) }.toSet()
+        val stdinTarget = stdinOverlayPath?.let { baseDirPath.resolve(it).normalize() }
+        val seen = HashSet<Path>()
+
+        return rawPairs.chunked(2).map { (rawPath, rawFile) ->
+            if (rawPath.isBlank()) {
+                throw CliValidationException("--context-overlay requires a project file path before the content file '$rawFile'")
+            }
+            val subject = "--context-overlay path '$rawPath'"
+            val path = resolveProjectPath(rawPath, subject, subject)
+            val absolute = baseDirPath.resolve(path).normalize()
+            if (!seen.add(absolute)) {
+                throw CliValidationException("$subject is given more than once")
+            }
+            if (absolute == stdinTarget) {
+                throw CliValidationException("$subject is the file read from standard input (--stdin-filename); give its content on stdin only")
+            }
+            if (absolute in targets) {
+                throw CliValidationException("$subject is also an analysis target in --files; overlays are project context only")
+            }
+            val contentFile = Path.of(rawFile).toAbsolutePath().normalize()
+            if (rawFile.isBlank() || !Files.isRegularFile(contentFile)) {
+                throw CliValidationException("--context-overlay content file does not exist or is not a file: '$rawFile' (for '$rawPath')")
+            }
+            ContextOverlay(path, contentFile)
+        }
+    }
+
+    /**
+     * Returns [projectSources] with each overlay's content in place of the disk content of its file; a file that does
+     * not exist on disk is added. The content files are read like source files (source charset, a leading byte order
+     * mark is dropped by [InputFile.contents]).
+     */
+    fun applyContextOverlays(projectSources: List<InputFile>, overlays: List<ContextOverlay>): List<InputFile> =
+        overlays.fold(projectSources) { sources, overlay ->
+            applyStdinOverlay(sources, overlay.path, overlay.contentFile.toFile().readText(charset)).projectSources
+        }
+
     /** Reads the whole standard input with the source charset, the same way [InputFile] reads a file. */
     fun readStdin(): String = System.`in`.bufferedReader(charset).readText()
 
@@ -171,25 +236,39 @@ internal class SourceSelection(
         if (stdinFilename.isBlank()) {
             return "stdin.sql"
         }
-        val rawVirtual = Path.of(stdinFilename.trim())
+        return resolveProjectPath(stdinFilename, "--stdin-filename", "--stdin-filename '$stdinFilename'")
+    }
+
+    /**
+     * Resolves a path that names a project file (which need not exist on disk) to its path relative to the sources
+     * directory; [subject] and [subjectWithValue] name the option in error messages.
+     */
+    private fun resolveProjectPath(raw: String, subject: String, subjectWithValue: String): String {
+        val rawVirtual = Path.of(raw.trim())
         val resolvedVirtual = if (rawVirtual.isAbsolute) {
             val normalized = rawVirtual.normalize()
             if (!normalized.startsWith(baseDirPath)) {
-                throw CliValidationException("--stdin-filename must be inside the sources directory '$baseDirPath'")
+                throw CliValidationException("$subject must be inside the sources directory '$baseDirPath'")
             }
             baseDirPath.relativize(normalized)
         } else {
             val candidate = baseDirPath.resolve(rawVirtual).normalize()
             if (!candidate.startsWith(baseDirPath)) {
-                throw CliValidationException("--stdin-filename cannot escape the sources directory")
+                throw CliValidationException("$subject cannot escape the sources directory")
             }
             rawVirtual.normalize()
         }
         val ext = resolvedVirtual.extension.lowercase(Locale.ROOT)
         if (!normalizedExtensions.contains(ext)) {
-            throw CliValidationException("--stdin-filename '$stdinFilename' has unsupported extension '$ext'. Supported extensions: $supportedExtensionsString")
+            throw CliValidationException("$subjectWithValue has unsupported extension '$ext'. Supported extensions: $supportedExtensionsString")
         }
         return resolvedVirtual.invariantSeparatorsPathString
+    }
+
+    /** A `--files` entry as a normalized absolute path (relative entries are resolved against the sources directory). */
+    private fun resolveCandidate(rawTarget: String): Path {
+        val rawPath = Path.of(rawTarget)
+        return if (rawPath.isAbsolute) rawPath.normalize() else baseDirPath.resolve(rawPath).normalize()
     }
 
     companion object {
