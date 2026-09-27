@@ -119,11 +119,47 @@ such issues.
   `InequalityUsage` and one from `ComparisonWithNull`), so after applying one, the file should be analyzed again.
 * The `json` `schemaVersion` stays `1`: the field is an additive, optional extension.
 
+### Fix mode (fork)
+
+`--fix` applies the quick fixes to the analyzed files, e.g. in a CI job or a pre-commit hook:
+
+```sh
+zpa-cli --sources . --fix                                   # fix all project files
+zpa-cli --sources . --files src/packages/customer.pkb --fix # fix one file
+zpa-cli --sources . --fix-dry-run > fixes.diff              # show the changes, write nothing
+```
+
+* The analysis runs as usual (`--sources`, `--files`, `--config`, `--extensions`, `--context-overlay`, NOSONAR, ...).
+  Then, per file, the first (preferred) quick fix of every issue is chosen in document order; a quick fix that
+  overlaps one chosen before is skipped. Quick fixes starting at the same position are chosen by the severity of
+  their issue (most severe first): for `x <> NULL`, `ComparisonWithNull`'s `IS NOT NULL` wins over
+  `InequalityUsage`'s `!=`. This is the same choice as "fix all" in zpa-for-vscode.
+* The fixed files are analyzed again, which finds skipped quick fixes and issues revealed by a fix. This repeats up
+  to `--fix-max-rounds` rounds (default `3`), analyzing only the files changed in the round before, and stops early
+  when nothing changes. A round whose fixes make a file unparsable is not applied to that file.
+* The report (`--output-format`, `--output-file`, `--fail-on`) shows the issues that **remain** after the fixes, so a
+  CI job can fail on what is left. A summary goes to stderr:
+  ```
+  Applied 4 quick fixes in 2 files (2 rounds)
+    src/a.sql: 3 quick fixes
+    src/b.sql: 1 quick fix
+  ```
+* Files are only written at the end and only if a quick fix changed them, each atomically (a temporary file in the
+  same directory replaces the file). The encoding stays UTF-8, and the line separators and a leading byte order mark
+  are kept. Files that are not valid UTF-8 are analyzed but not fixed; a file that changed on disk during the
+  analysis is not written. If a file cannot be written, the exit code is `3`.
+* `--fix-dry-run` does the same without writing: it prints a unified diff of every file that would change to stdout
+  (`--- a/<path>` / `+++ b/<path>`, relative to `--sources`, usable with `git apply`) and reports the issues that
+  would remain. With `--output-format json` it needs `--output-file`, since stdout carries the diff.
+* Rejected with exit code `2`: `--fix` / `--fix-dry-run` with `--syntax-only` (no rule offers quick fixes) or with
+  standard input (`--files -`; fix the file on disk instead), and `--fix-max-rounds` below 1 or without `--fix`.
+* In [daemon mode](#daemon-mode-fork) `--fix` works the same way; the files are written before the response is sent.
+
 ### Exit codes:
 * `0`: analysis completed without an enabled validation failure (threshold not exceeded)
 * `1`: requested validation condition failed (findings met or exceeded the `--fail-on` threshold)
 * `2`: invalid invocation, command-line arguments, or target file error (e.g. nonexistent target file, target outside `--sources`, stdin used without `--stdin-filename` in normal analysis)
-* `3`: internal execution failure
+* `3`: internal execution failure (with `--fix`, also: a fixed file could not be written)
 ### Examples
 
 Full project analysis:
@@ -219,12 +255,14 @@ daemon=1
 stdin-project=1
 quick-fixes=1
 context-overlays=1
+fix=1
 ```
 
 * `daemon`: [daemon mode](#daemon-mode-fork).
 * `stdin-project`: [analyzing stdin with the project context](#analyzing-stdin-with-the-project-context-fork).
 * `quick-fixes`: [quick fixes](#quick-fixes-fork) in the `json` and `sq-generic-issue-import` formats.
 * `context-overlays`: [context overlays](#context-overlays-fork) (`--context-overlay <path> <file>`).
+* `fix`: [fix mode](#fix-mode-fork) (`--fix`, `--fix-dry-run`, `--fix-max-rounds`).
 
 This is a stable contract: there is one key per fork feature present in the build, and its value is the revision of the
 feature (an integer, currently `1`, raised only for incompatible changes). Keys are not renamed or removed while the
