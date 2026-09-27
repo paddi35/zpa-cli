@@ -18,6 +18,7 @@ the upstream `main` branch):
   project file `<path>` (previously only with `--syntax-only`).
 - A UTF-8 byte order mark at the start of a file or of standard input is dropped when the source is read, like
   SonarQube does (previously a parsing error at 1:0); columns on the first line are counted without it.
+- `--context-overlay <path> <file>` (repeatable) uses the content of other unsaved files as project context only.
 - The jar contains `META-INF/zpa-cli-capabilities.properties`, listing the fork features for clients.
 - CI: Docker Hub publishing is skipped outside `felipebz/zpa-cli`, and the fork builds against the ZPA fork
   (`paddi35/zpa`, published to mavenLocal as `4.1.1-local-SNAPSHOT`) instead of the upstream snapshot.

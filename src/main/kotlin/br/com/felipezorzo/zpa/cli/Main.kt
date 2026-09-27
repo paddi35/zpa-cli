@@ -89,15 +89,25 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         } else {
             null
         }
+        // Unsaved content of other project files, used as project context only. Validated before plugins load and
+        // before anything is read from stdin.
+        val contextOverlays = if (args.contextOverlays.isEmpty()) {
+            emptyList()
+        } else {
+            if (args.syntaxOnly) {
+                throw CliValidationException("--context-overlay cannot be used with --syntax-only, which has no project context")
+            }
+            sourceSelection.resolveContextOverlays(args.contextOverlays, args.files, stdinOverlayPath)
+        }
 
         val validationFailed = if (args.syntaxOnly) {
-            analyze(null, format, failOnThreshold, config, sourceSelection, stdinOverlayPath)
+            analyze(null, format, failOnThreshold, config, sourceSelection, stdinOverlayPath, contextOverlays)
         } else {
             plugins.withPlugins { pluginManager ->
                 for (plugin in pluginManager.startedPlugins) {
                     LOG.info("Plugin '${plugin.descriptor.pluginId}@${plugin.descriptor.version}' loaded")
                 }
-                analyze(pluginManager, format, failOnThreshold, config, sourceSelection, stdinOverlayPath)
+                analyze(pluginManager, format, failOnThreshold, config, sourceSelection, stdinOverlayPath, contextOverlays)
             }
         }
 
@@ -112,6 +122,7 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         config: ConfigFile,
         sourceSelection: SourceSelection,
         stdinOverlayPath: String?,
+        contextOverlays: List<SourceSelection.ContextOverlay>,
     ): Boolean {
         var validationFailed = false
         val ellapsedTime = measureTimeMillis {
@@ -176,7 +187,9 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
                 )
             } else if (stdinOverlayPath != null) {
                 val overlay = sourceSelection.applyStdinOverlay(
-                    projectSources = sourceSelection.discoverProjectSources(),
+                    projectSources = sourceSelection.applyContextOverlays(
+                        sourceSelection.discoverProjectSources(), contextOverlays
+                    ),
                     overlayPath = stdinOverlayPath,
                     content = sourceSelection.readStdin()
                 )
@@ -184,11 +197,14 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
                 projectAnalysisContext = prepareProjectAnalysisContext(overlay.projectSources)
             } else {
                 val projectSources = sourceSelection.discoverProjectSources()
+                // Targets are files on disk; the overlays (never a target) only change the project context.
                 targetFiles = sourceSelection.resolveProjectTargets(
                     projectSources = projectSources,
                     requestedFiles = args.files
                 )
-                projectAnalysisContext = prepareProjectAnalysisContext(projectSources)
+                projectAnalysisContext = prepareProjectAnalysisContext(
+                    sourceSelection.applyContextOverlays(projectSources, contextOverlays)
+                )
             }
 
             val scanner = AstScanner(
@@ -314,6 +330,7 @@ fun execute(args: Array<String>, plugins: PluginProvider = PerRunPlugins()): Int
         .build()
     return try {
         cmd.parse(*args)
+        checkContextOverlayValues(args)
         if (arguments.help) {
             val sb = StringBuilder()
             cmd.usage(sb)
@@ -334,6 +351,21 @@ fun execute(args: Array<String>, plugins: PluginProvider = PerRunPlugins()): Int
         System.err.println("Execution failed: ${exception.message}")
         exception.printStackTrace(System.err)
         3
+    }
+}
+
+/**
+ * JCommander drops empty arguments and accepts a trailing option with fewer values than its arity, which would shift the
+ * `<path> <file>` pairs of `--context-overlay`; so both values are checked on the raw arguments.
+ */
+private fun checkContextOverlayValues(args: Array<String>) {
+    for ((index, arg) in args.withIndex()) {
+        if (arg == CONTEXT_OVERLAY_OPTION) {
+            val values = args.drop(index + 1).take(2)
+            if (values.size < 2 || values.any { it.isBlank() }) {
+                throw CliValidationException("$CONTEXT_OVERLAY_OPTION expects two non-empty values: <path> <file>")
+            }
+        }
     }
 }
 

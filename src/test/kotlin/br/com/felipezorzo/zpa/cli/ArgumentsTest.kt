@@ -48,6 +48,25 @@ class ArgumentsTest {
     }
 
     @Test
+    fun parseRepeatedContextOverlays() {
+        val args = Arguments()
+        val cmd = JCommander.newBuilder().addObject(args).build()
+        cmd.parse(
+            "--sources", "C:\\work", "--files", "-",
+            "--context-overlay", "C:\\work\\pkg.pks", "C:\\Temp\\buffer=1.sql",
+            "--stdin-filename", "pkg.pkb",
+            "--context-overlay", "sub/other.pks", "/tmp/buffer 2.sql"
+        )
+
+        assertEquals(listOf("-"), args.files)
+        assertEquals("pkg.pkb", args.stdinFilename)
+        assertEquals(
+            listOf("C:\\work\\pkg.pks", "C:\\Temp\\buffer=1.sql", "sub/other.pks", "/tmp/buffer 2.sql"),
+            args.contextOverlays
+        )
+    }
+
+    @Test
     fun parseFailOnOption() {
         val args = Arguments()
         val cmd = JCommander.newBuilder().addObject(args).build()
