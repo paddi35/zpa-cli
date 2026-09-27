@@ -32,7 +32,11 @@ jobs:
 
   publish:
     name: Validate and publish stable release
-    if: needs.release_please.outputs.release_created == 'true'
+    # Only in felipebz/zpa-cli: the fork has none of the required secrets (jreleaser signing, Docker Hub) and must
+    # never publish a release under the upstream's GitHub/Docker Hub coordinates. release_please itself still runs
+    # in the fork, so the draft release PR for version tracking keeps working. promote-stable-docker (needs:
+    # publish, no if: of its own) skips along with it.
+    if: needs.release_please.outputs.release_created == 'true' && github.repository == 'felipebz/zpa-cli'
     needs: release_please
     runs-on: ubuntu-latest
     outputs:
