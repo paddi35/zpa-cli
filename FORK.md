@@ -11,6 +11,7 @@ the upstream `main` branch):
 - Daemon mode (`--daemon`): repeated analyses in one JVM over a line-based JSON protocol on stdin/stdout. The
   temporary directory with the relocated plugin JARs is now deleted at the end of every run, and the jar manifest
   carries `Implementation-Version`.
+- The daemon loads the plugins once and reuses them across requests until a plugin JAR is added, replaced or removed.
 - Quick fixes offered by the rules are exported as an optional `quickFixes` field per issue in the `json` and
   `sq-generic-issue-import` formats; the `console` format marks such issues with `[quick fix available]`.
 - Standard input (`--files - --stdin-filename <path>`) can be analyzed with the project context, as an overlay of the

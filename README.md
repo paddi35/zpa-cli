@@ -171,8 +171,13 @@ startup on every run. `--daemon` must be the only argument. The protocol is line
 * `{"type":"shutdown"}` or the end of stdin stops the daemon with exit code 0.
 
 Relative paths (`--sources`, `--output-file`, `--config`, ...) resolve against the directory the daemon was started
-in, not per request, so clients should pass absolute paths. Plugins are loaded per request, so plugins added to the
-`plugins` folder are picked up without restarting the daemon.
+in, not per request, so clients should pass absolute paths.
+
+The plugins in the `plugins` folder are loaded by the first analysis request and reused by the following ones; the
+rules, their configuration and the check instances are still set up per request. Before every analysis the daemon
+compares the plugin JARs (file name, size and modification time) with the loaded ones: when a JAR was added, replaced
+or removed, the plugins are unloaded and loaded again, so changes are picked up without restarting the daemon. The
+loaded plugins are released when the daemon stops.
 
 ## Capabilities file (fork)
 

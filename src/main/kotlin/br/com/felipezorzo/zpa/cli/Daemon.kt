@@ -1,5 +1,6 @@
 package br.com.felipezorzo.zpa.cli
 
+import br.com.felipezorzo.zpa.cli.plugin.CachedPlugins
 import com.fasterxml.jackson.core.JsonProcessingException
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -27,17 +28,29 @@ const val DAEMON_FLAG = "--daemon"
  * Requests run sequentially through [executor] (the normal CLI entry point). While a request runs, `System.out`,
  * `System.err` and `System.in` are replaced by per-request buffers, so nothing the analysis prints (including JUL log
  * output, whose ConsoleHandler is recreated by every run) reaches the protocol stream.
+ *
+ * The plugins are loaded by the first analysis and reused by the following requests through [plugins] (see
+ * [CachedPlugins]); they are reloaded when the plugin JARs change and released when the daemon stops. This relies on
+ * the requests being sequential.
  */
 class Daemon(
     input: InputStream,
     private val output: PrintStream,
     private val version: String = cliVersion(),
-    private val executor: (Array<String>) -> Int = ::execute,
+    private val plugins: CachedPlugins = CachedPlugins(),
+    private val executor: (Array<String>) -> Int = { args -> execute(args, plugins) },
 ) {
     private val reader = BufferedReader(InputStreamReader(input, UTF_8))
     private val mapper = jacksonObjectMapper()
 
-    fun run(): Int {
+    /** Serves requests until a shutdown request or the end of input, then releases the cached plugins. */
+    fun run(): Int = try {
+        serve()
+    } finally {
+        plugins.close()
+    }
+
+    private fun serve(): Int {
         writeLine(mapOf("type" to "ready", "protocol" to PROTOCOL_VERSION, "version" to version))
         while (true) {
             val line = reader.readLine() ?: return 0
