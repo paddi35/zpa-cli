@@ -24,8 +24,8 @@ Currently, the zpa-cli supports these options:
 * `--fail-on`: Failure threshold for the exit code (`none`, `any`, `syntax`, `blocker`, `critical`, `major`, `minor`, `info`). In normal analysis mode, the default is `none`. When `--syntax-only` is requested without `--fail-on`, the default threshold is `syntax`. An explicit `--fail-on none` overrides this default in syntax-only mode.
 * `--forms-metadata`: Path to the Oracle Forms [metadata file](https://github.com/felipebz/zpa/wiki/Oracle-Forms-support).
 * `--extensions`: File extensions to analyze, separated by comma. The default value is `sql,pkg,pks,pkb,fun,pcd,tgg,prc,tpb,trg,typ,tab,tps`.
-* `--output-format`: Format of the output. Supported formats: `console`, `json`, `sq-generic-issue-import`. The default value is `console`.
-* `--output-file`: Path to the output file. When specified with `json`, writes the report to the file without writing to stdout.
+* `--output-format`: Format of the output. Supported formats: `console`, `json`, `sq-generic-issue-import`, `sarif`. The default value is `console`.
+* `--output-file`: Path to the output file. When specified with `json` or `sarif`, writes the report to the file without writing to stdout.
 * `--config`: Path to the configuration file. The file format must comply with the [provided JSON schema](schema.json).
   You can refer to the example [zpa-config-example.json](zpa-config-example.json) for guidance. If the configuration
   file is not provided, only the rules marked as "activated by default" will be executed.
@@ -89,6 +89,7 @@ two values and can be repeated, once per file:
     - `quickFixes` (optional, fork): automatic corrections for the diagnostic, see [Quick fixes](#quick-fixes-fork). The field is omitted when the rule offers none.
 * `sq-generic-issue-import`: generates a JSON file using SonarQube's ["Generic Issue Data" format](https://docs.sonarqube.org/latest/analysis/generic-issue/) that can be used in SonarCloud or in a SonarQube server.
   Issues with a quick fix additionally carry a `quickFixes` field (fork, see [Quick fixes](#quick-fixes-fork)); SonarQube ignores it.
+* `sarif` (fork): generates a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html) log, consumable by tools such as GitHub code scanning's `upload-sarif` action. Safe to pipe like `json` (stdout contains only the SARIF document when `--output-file` is not used). One `run`, with a `tool.driver.rules` entry per distinct rule found and one `result` per issue; `region` columns are 1-based (SARIF's convention), unlike the 0-based columns of the other formats. Quick fixes are not included (SARIF has no standard field for them).
 
 ### Quick fixes (fork)
 
@@ -256,6 +257,7 @@ stdin-project=1
 quick-fixes=1
 context-overlays=1
 fix=1
+sarif=1
 ```
 
 * `daemon`: [daemon mode](#daemon-mode-fork).
@@ -263,6 +265,7 @@ fix=1
 * `quick-fixes`: [quick fixes](#quick-fixes-fork) in the `json` and `sq-generic-issue-import` formats.
 * `context-overlays`: [context overlays](#context-overlays-fork) (`--context-overlay <path> <file>`).
 * `fix`: [fix mode](#fix-mode-fork) (`--fix`, `--fix-dry-run`, `--fix-max-rounds`).
+* `sarif`: `--output-format sarif`.
 
 This is a stable contract: there is one key per fork feature present in the build, and its value is the revision of the
 feature (an integer, currently `1`, raised only for incompatible changes). Keys are not renamed or removed while the

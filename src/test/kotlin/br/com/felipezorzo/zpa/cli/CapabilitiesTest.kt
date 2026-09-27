@@ -14,7 +14,14 @@ class CapabilitiesTest {
         val properties = Properties().apply { stream.use { load(it) } }
 
         assertEquals(
-            mapOf("daemon" to "1", "stdin-project" to "1", "quick-fixes" to "1", "context-overlays" to "1", "fix" to "1"),
+            mapOf(
+                "daemon" to "1",
+                "stdin-project" to "1",
+                "quick-fixes" to "1",
+                "context-overlays" to "1",
+                "fix" to "1",
+                "sarif" to "1"
+            ),
             properties.stringPropertyNames().associateWith { properties.getProperty(it) }
         )
     }
