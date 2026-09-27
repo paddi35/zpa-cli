@@ -40,6 +40,15 @@ class Arguments {
     @Parameter(names = ["--fail-on"], description = "Failure threshold for validation exit code (none, any, syntax, blocker, critical, major, minor, info)")
     var failOn: String? = null
 
+    @Parameter(names = ["--fix"], description = "Apply the quick fixes of the issues to the analyzed files; the report shows the remaining issues")
+    var fix: Boolean = false
+
+    @Parameter(names = ["--fix-dry-run"], description = "Like --fix, but print the changes as a unified diff to standard output instead of writing the files")
+    var fixDryRun: Boolean = false
+
+    @Parameter(names = ["--fix-max-rounds"], description = "Maximum number of fix rounds (fix, analyze the changed files again, ...) with --fix (default: 3)")
+    var fixMaxRounds: Int? = null
+
     @Parameter(names = ["--help", "-h"], help = true, description = "Display help information")
     var help: Boolean = false
 }

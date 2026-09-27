@@ -8,6 +8,7 @@ import br.com.felipezorzo.zpa.cli.exporters.ConsoleExporter
 import br.com.felipezorzo.zpa.cli.exporters.GenericIssueFormatExporter
 import br.com.felipezorzo.zpa.cli.exporters.IssueExporter
 import br.com.felipezorzo.zpa.cli.exporters.JsonExporter
+import br.com.felipezorzo.zpa.cli.fix.FixRunner
 import br.com.felipezorzo.zpa.cli.plugin.PerRunPlugins
 import br.com.felipezorzo.zpa.cli.plugin.PluginManager
 import br.com.felipezorzo.zpa.cli.plugin.PluginProvider
@@ -36,6 +37,7 @@ import com.felipebz.zpa.utils.log.Loggers
 import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.util.*
 import java.util.concurrent.TimeUnit
 import java.util.logging.LogManager
@@ -46,6 +48,11 @@ import kotlin.system.measureTimeMillis
 const val CONSOLE = "console"
 const val GENERIC_ISSUE_FORMAT = "sq-generic-issue-import"
 const val JSON = "json"
+const val DEFAULT_FIX_MAX_ROUNDS = 3
+
+/** Fixed files could not be written (exit code 3, after the report of the remaining issues). */
+class FixWriteException(message: String) : Exception(message)
+
 class Main(private val args: Arguments, private val plugins: PluginProvider = PerRunPlugins()) {
 
     val mapper = jacksonObjectMapper()
@@ -79,6 +86,7 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         val sourceSelection = SourceSelection(baseDirPath, extensions, StandardCharsets.UTF_8)
 
         val readsStdin = args.files.contains(SourceSelection.STDIN_TARGET)
+        validateFixOptions(format, readsStdin)
         if (args.stdinFilename.isNotEmpty() && !readsStdin) {
             throw CliValidationException("--stdin-filename can only be used when reading from standard input ('--files -')")
         }
@@ -101,13 +109,13 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         }
 
         val validationFailed = if (args.syntaxOnly) {
-            analyze(null, format, failOnThreshold, config, sourceSelection, stdinOverlayPath, contextOverlays)
+            analyze(null, format, failOnThreshold, config, sourceSelection, baseDirPath, stdinOverlayPath, contextOverlays)
         } else {
             plugins.withPlugins { pluginManager ->
                 for (plugin in pluginManager.startedPlugins) {
                     LOG.info("Plugin '${plugin.descriptor.pluginId}@${plugin.descriptor.version}' loaded")
                 }
-                analyze(pluginManager, format, failOnThreshold, config, sourceSelection, stdinOverlayPath, contextOverlays)
+                analyze(pluginManager, format, failOnThreshold, config, sourceSelection, baseDirPath, stdinOverlayPath, contextOverlays)
             }
         }
 
@@ -121,6 +129,7 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         failOnThreshold: FailOnThreshold,
         config: ConfigFile,
         sourceSelection: SourceSelection,
+        baseDirPath: Path,
         stdinOverlayPath: String?,
         contextOverlays: List<SourceSelection.ContextOverlay>,
     ): Boolean {
@@ -176,64 +185,29 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
 
             val metadata = if (args.syntaxOnly) null else FormsMetadata.loadFromFile(args.formsMetadata)
 
-            val targetFiles: List<InputFile>
-            val projectAnalysisContext: ProjectAnalysisContext
-
-            if (args.syntaxOnly) {
-                projectAnalysisContext = ProjectAnalysisContext.NOT_PREPARED
-                targetFiles = sourceSelection.resolveSyntaxOnlyTargets(
-                    requestedFiles = args.files,
-                    stdinFilename = args.stdinFilename
-                )
-            } else if (stdinOverlayPath != null) {
-                val overlay = sourceSelection.applyStdinOverlay(
-                    projectSources = sourceSelection.applyContextOverlays(
-                        sourceSelection.discoverProjectSources(), contextOverlays
-                    ),
-                    overlayPath = stdinOverlayPath,
-                    content = sourceSelection.readStdin()
-                )
-                targetFiles = listOf(overlay.target)
-                projectAnalysisContext = prepareProjectAnalysisContext(overlay.projectSources)
-            } else {
-                val projectSources = sourceSelection.discoverProjectSources()
-                // Targets are files on disk; the overlays (never a target) only change the project context.
-                targetFiles = sourceSelection.resolveProjectTargets(
-                    projectSources = projectSources,
-                    requestedFiles = args.files
-                )
-                projectAnalysisContext = prepareProjectAnalysisContext(
-                    sourceSelection.applyContextOverlays(projectSources, contextOverlays)
-                )
-            }
-
-            val scanner = AstScanner(
-                checkList,
-                metadata,
-                true,
-                StandardCharsets.UTF_8,
-                projectAnalysisContext
-            )
-
-            // Started right before the guarded scan, so its thread is always stopped or cancelled.
-            val progressReport = ProgressReport("Report about progress of code analyzer", TimeUnit.SECONDS.toMillis(10))
-            progressReport.start(targetFiles.map { it.pathRelativeToBase }.toList())
-
             val rawIssues: List<ZpaIssue>
-            var scanSucceeded = false
-            try {
-                rawIssues = targetFiles.parallelStream().flatMap { file ->
-                    val scannerResult = scanner.scanFile(file, fileId = FileId(file.pathRelativeToBase))
-                    progressReport.nextFile()
-                    NoSonarFilter.filter(scannerResult.issues, scannerResult.linesWithNoSonar).stream()
-                }.collect(Collectors.toList())
-                scanSucceeded = true
-            } finally {
-                if (scanSucceeded) {
-                    progressReport.stop()
-                } else {
-                    progressReport.cancel()
+            val fixResult: FixRunner.Result?
+            if (isFixMode) {
+                // Targets are files on disk; the overlays (never a target) only change the project context.
+                val projectSources = sourceSelection.discoverProjectSources()
+                val targets = sourceSelection.resolveProjectTargets(projectSources = projectSources, requestedFiles = args.files)
+                val runner = FixRunner(
+                    maxRounds = args.fixMaxRounds ?: DEFAULT_FIX_MAX_ROUNDS,
+                    dryRun = args.fixDryRun,
+                    out = System.out,
+                    err = System.err
+                ) { roundTargets, fixedSources ->
+                    val sources = projectSources.map { fixedSources[it.pathRelativeToBase] ?: it }
+                    scan(
+                        checkList, metadata, roundTargets,
+                        prepareProjectAnalysisContext(sourceSelection.applyContextOverlays(sources, contextOverlays))
+                    )
                 }
+                fixResult = runner.run(targets, baseDirPath)
+                rawIssues = fixResult.issues
+            } else {
+                fixResult = null
+                rawIssues = analyzeTargets(checkList, metadata, sourceSelection, stdinOverlayPath, contextOverlays)
             }
 
             val issues = IssueOrdering.sort(rawIssues)
@@ -252,10 +226,124 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
             }
 
             issueExporter.export(issues)
+
+            if (fixResult != null && fixResult.writeFailures.isNotEmpty()) {
+                throw FixWriteException("Could not write the fixed content of: ${fixResult.writeFailures.joinToString(", ")}")
+            }
         }
 
         LOG.info("Time elapsed: $ellapsedTime ms")
         return validationFailed
+    }
+
+    private val isFixMode: Boolean
+        get() = args.fix || args.fixDryRun
+
+    /** Validates `--fix`, `--fix-dry-run` and `--fix-max-rounds` before plugins load and before stdin is read. */
+    private fun validateFixOptions(format: String, readsStdin: Boolean) {
+        val maxRounds = args.fixMaxRounds
+        if (maxRounds != null) {
+            if (!isFixMode) {
+                throw CliValidationException("--fix-max-rounds can only be used with --fix or --fix-dry-run")
+            }
+            if (maxRounds < 1) {
+                throw CliValidationException("--fix-max-rounds must be at least 1")
+            }
+        }
+        if (!isFixMode) {
+            return
+        }
+        val option = if (args.fixDryRun) "--fix-dry-run" else "--fix"
+        if (args.syntaxOnly) {
+            throw CliValidationException("$option cannot be used with --syntax-only, which runs no rule with quick fixes")
+        }
+        if (readsStdin) {
+            throw CliValidationException("$option cannot be used with standard input ('--files -'); only files on disk can be fixed")
+        }
+        if (args.fixDryRun && format == JSON && args.outputFile.isEmpty()) {
+            throw CliValidationException("--fix-dry-run writes the diff to standard output; use --output-file for the json report")
+        }
+    }
+
+    /** Resolves the targets and the project context of a normal analysis (no `--fix`) and analyzes them. */
+    private fun analyzeTargets(
+        checkList: List<PlSqlVisitor>,
+        metadata: FormsMetadata?,
+        sourceSelection: SourceSelection,
+        stdinOverlayPath: String?,
+        contextOverlays: List<SourceSelection.ContextOverlay>,
+    ): List<ZpaIssue> {
+        val targetFiles: List<InputFile>
+        val projectAnalysisContext: ProjectAnalysisContext
+
+        if (args.syntaxOnly) {
+            projectAnalysisContext = ProjectAnalysisContext.NOT_PREPARED
+            targetFiles = sourceSelection.resolveSyntaxOnlyTargets(
+                requestedFiles = args.files,
+                stdinFilename = args.stdinFilename
+            )
+        } else if (stdinOverlayPath != null) {
+            val overlay = sourceSelection.applyStdinOverlay(
+                projectSources = sourceSelection.applyContextOverlays(
+                    sourceSelection.discoverProjectSources(), contextOverlays
+                ),
+                overlayPath = stdinOverlayPath,
+                content = sourceSelection.readStdin()
+            )
+            targetFiles = listOf(overlay.target)
+            projectAnalysisContext = prepareProjectAnalysisContext(overlay.projectSources)
+        } else {
+            val projectSources = sourceSelection.discoverProjectSources()
+            // Targets are files on disk; the overlays (never a target) only change the project context.
+            targetFiles = sourceSelection.resolveProjectTargets(
+                projectSources = projectSources,
+                requestedFiles = args.files
+            )
+            projectAnalysisContext = prepareProjectAnalysisContext(
+                sourceSelection.applyContextOverlays(projectSources, contextOverlays)
+            )
+        }
+
+        return scan(checkList, metadata, targetFiles, projectAnalysisContext)
+    }
+
+    /** Analyzes [targetFiles] and returns their issues, without the ones suppressed by NOSONAR. */
+    private fun scan(
+        checkList: List<PlSqlVisitor>,
+        metadata: FormsMetadata?,
+        targetFiles: List<InputFile>,
+        projectAnalysisContext: ProjectAnalysisContext,
+    ): List<ZpaIssue> {
+        val scanner = AstScanner(
+            checkList,
+            metadata,
+            true,
+            StandardCharsets.UTF_8,
+            projectAnalysisContext
+        )
+
+        // Started right before the guarded scan, so its thread is always stopped or cancelled.
+        val progressReport = ProgressReport("Report about progress of code analyzer", TimeUnit.SECONDS.toMillis(10))
+        progressReport.start(targetFiles.map { it.pathRelativeToBase }.toList())
+
+        val rawIssues: List<ZpaIssue>
+        var scanSucceeded = false
+        try {
+            rawIssues = targetFiles.parallelStream().flatMap { file ->
+                val scannerResult = scanner.scanFile(file, fileId = FileId(file.pathRelativeToBase))
+                progressReport.nextFile()
+                NoSonarFilter.filter(scannerResult.issues, scannerResult.linesWithNoSonar).stream()
+            }.collect(Collectors.toList())
+            scanSucceeded = true
+        } finally {
+            if (scanSucceeded) {
+                progressReport.stop()
+            } else {
+                progressReport.cancel()
+            }
+        }
+
+        return rawIssues
     }
 
     private fun prepareProjectAnalysisContext(files: Collection<InputFile>): ProjectAnalysisContext =
@@ -347,6 +435,9 @@ fun execute(args: Array<String>, plugins: PluginProvider = PerRunPlugins()): Int
     } catch (exception: CliValidationException) {
         System.err.println(exception.message)
         2
+    } catch (exception: FixWriteException) {
+        System.err.println(exception.message)
+        3
     } catch (exception: Exception) {
         System.err.println("Execution failed: ${exception.message}")
         exception.printStackTrace(System.err)
