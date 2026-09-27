@@ -74,6 +74,7 @@ class FixModeTest {
             DECLARE
               v NUMBER := NULL;
             BEGIN
+              v := 1;
               IF a <> b THEN
                 NULL;
               END IF;
@@ -96,6 +97,7 @@ class FixModeTest {
             DECLARE
               v NUMBER;
             BEGIN
+              v := 1;
               IF a != b THEN
                 NULL;
               END IF;
@@ -160,7 +162,7 @@ class FixModeTest {
         cr.writeBytes("BEGIN\r  IF a <> b THEN\r    NULL;\r  END IF;\rEND;\r/".toByteArray(UTF_8))
         // a BOM and a CRLF on the first line of the fix
         val firstLine = sourcesDir.resolve("first.sql")
-        firstLine.writeBytes(bom + "DECLARE v NUMBER := NULL; BEGIN IF a <> 'ä' THEN NULL; END IF; END;\r\n/\r\n".toByteArray(UTF_8))
+        firstLine.writeBytes(bom + "DECLARE v NUMBER := NULL; BEGIN v := 1; IF a <> 'ä' THEN NULL; END IF; END;\r\n/\r\n".toByteArray(UTF_8))
 
         val result = run("--fix")
 
@@ -171,7 +173,7 @@ class FixModeTest {
         )
         assertContentEquals("BEGIN\r  IF a != b THEN\r    NULL;\r  END IF;\rEND;\r/".toByteArray(UTF_8), cr.readBytes())
         assertContentEquals(
-            bom + "DECLARE v NUMBER; BEGIN IF a != 'ä' THEN NULL; END IF; END;\r\n/\r\n".toByteArray(UTF_8),
+            bom + "DECLARE v NUMBER; BEGIN v := 1; IF a != 'ä' THEN NULL; END IF; END;\r\n/\r\n".toByteArray(UTF_8),
             firstLine.readBytes()
         )
         assertEquals(listOf("crlf.sql", "cr.sql", "first.sql").sorted(), sourcesDir.list()!!.sorted(), "no temporary files are left")
