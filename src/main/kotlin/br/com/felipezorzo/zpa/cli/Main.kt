@@ -8,6 +8,7 @@ import br.com.felipezorzo.zpa.cli.exporters.ConsoleExporter
 import br.com.felipezorzo.zpa.cli.exporters.GenericIssueFormatExporter
 import br.com.felipezorzo.zpa.cli.exporters.IssueExporter
 import br.com.felipezorzo.zpa.cli.exporters.JsonExporter
+import br.com.felipezorzo.zpa.cli.exporters.SarifExporter
 import br.com.felipezorzo.zpa.cli.fix.FixRunner
 import br.com.felipezorzo.zpa.cli.plugin.PerRunPlugins
 import br.com.felipezorzo.zpa.cli.plugin.PluginManager
@@ -48,6 +49,7 @@ import kotlin.system.measureTimeMillis
 const val CONSOLE = "console"
 const val GENERIC_ISSUE_FORMAT = "sq-generic-issue-import"
 const val JSON = "json"
+const val SARIF = "sarif"
 const val DEFAULT_FIX_MAX_ROUNDS = 3
 
 /** Fixed files could not be written (exit code 3, after the report of the remaining issues). */
@@ -63,8 +65,10 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         }
 
         val format = args.outputFormat.lowercase(Locale.ROOT)
-        if (format != CONSOLE && format != GENERIC_ISSUE_FORMAT && format != JSON) {
-            throw CliValidationException("Invalid output format: '${args.outputFormat}'. Supported formats: $CONSOLE, $GENERIC_ISSUE_FORMAT, $JSON")
+        if (format != CONSOLE && format != GENERIC_ISSUE_FORMAT && format != JSON && format != SARIF) {
+            throw CliValidationException(
+                "Invalid output format: '${args.outputFormat}'. Supported formats: $CONSOLE, $GENERIC_ISSUE_FORMAT, $JSON, $SARIF"
+            )
         }
 
         val failOnThreshold = if (args.failOn != null) {
@@ -222,6 +226,7 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
                     validationFailed = validationFailed,
                     threshold = failOnThreshold.cliName
                 )
+                SARIF -> SarifExporter(outputFile = args.outputFile)
                 else -> throw CliValidationException("Invalid output format: '${args.outputFormat}'")
             }
 
@@ -260,8 +265,8 @@ class Main(private val args: Arguments, private val plugins: PluginProvider = Pe
         if (readsStdin) {
             throw CliValidationException("$option cannot be used with standard input ('--files -'); only files on disk can be fixed")
         }
-        if (args.fixDryRun && format == JSON && args.outputFile.isEmpty()) {
-            throw CliValidationException("--fix-dry-run writes the diff to standard output; use --output-file for the json report")
+        if (args.fixDryRun && (format == JSON || format == SARIF) && args.outputFile.isEmpty()) {
+            throw CliValidationException("--fix-dry-run writes the diff to standard output; use --output-file for the $format report")
         }
     }
 

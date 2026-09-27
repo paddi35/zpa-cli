@@ -27,6 +27,8 @@ the upstream `main` branch):
   release pipeline after the `release-please` draft PR (Maven Central deployment, signing, the GitHub release,
   Docker Hub promotion) only runs in `felipebz/zpa-cli` - the fork has none of the required secrets and never
   publishes a release under the upstream's coordinates. `release-please` itself still runs in the fork.
+- `--output-format sarif` produces a SARIF 2.1.0 log (one run, with a `rules` array and one `result` per issue),
+  consumable by tools such as GitHub code scanning's `upload-sarif` action.
 
 Local builds use the ZPA version given by `-PzpaVersion` (for example a `-local-SNAPSHOT` build of
 the `paddi35/zpa` fork) and are not official zpa-cli releases.
